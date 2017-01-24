@@ -61,7 +61,7 @@ import time
 import numpy as np
 import tensorflow as tf
 
-from tensorflow.models.rnn.ptb import reader
+import lreader as reader
 
 flags = tf.flags
 logging = tf.logging
@@ -91,6 +91,7 @@ class PTBModel(object):
 
     self._input_data = tf.placeholder(tf.int32, [batch_size, num_steps])
     self._targets = tf.placeholder(tf.int32, [batch_size, num_steps])
+    self._input_mask = tf.placeholder(tf.int32, [batch_size, num_steps])
 
     # Slightly better results can be obtained with forget gate biases
     # initialized to 1 but the hyperparameters of the model would need to be
@@ -103,7 +104,7 @@ class PTBModel(object):
 
     self._initial_state = cell.zero_state(batch_size, data_type())
 
-    with tf.device("/cpu:0"):
+    with tf.device("/gpu:0"):
       embedding = tf.get_variable(
           "embedding", [vocab_size, size], dtype=data_type())
       inputs = tf.nn.embedding_lookup(embedding, self._input_data)
@@ -117,27 +118,38 @@ class PTBModel(object):
     #
     # The alternative version of the code below is:
     #
-    # inputs = [tf.squeeze(input_, [1])
-    #           for input_ in tf.split(1, num_steps, inputs)]
-    # outputs, state = tf.nn.rnn(cell, inputs, initial_state=self._initial_state)
-    outputs = []
-    state = self._initial_state
-    with tf.variable_scope("RNN"):
-      for time_step in range(num_steps):
-        if time_step > 0: tf.get_variable_scope().reuse_variables()
-        (cell_output, state) = cell(inputs[:, time_step, :], state)
-        outputs.append(cell_output)
+    #mask = tf.sign(self._input_data)
+    lengths = tf.reduce_sum(self._input_mask, 1)
+    #inputs = tf.unstack(inputs, num=num_steps, axis=1)
+    #inputs = [tf.squeeze(input_, [1])
+    #          for input_ in tf.split(1, num_steps, inputs)]
+    #outputs, state = tf.nn.dynamic_rnn(cell, inputs, initial_state=self._initial_state, sequence_length=lengths)
+    #outputs = []
+    #state = self._initial_state
+    #with tf.variable_scope("RNN"):
+    #  for time_step in range(num_steps):
+    #    if time_step > 0: tf.get_variable_scope().reuse_variables()
+    #    (cell_output, state) = cell(inputs[:, time_step, :], state)
+    #    outputs.append(cell_output)
+
+    inputs = tf.unstack(inputs, num=num_steps, axis=1)
+    outputs, state = tf.nn.rnn(cell, inputs, initial_state=self._initial_state)
 
     output = tf.reshape(tf.concat(1, outputs), [-1, size])
     softmax_w = tf.get_variable(
         "softmax_w", [size, vocab_size], dtype=data_type())
     softmax_b = tf.get_variable("softmax_b", [vocab_size], dtype=data_type())
     logits = tf.matmul(output, softmax_w) + softmax_b
-    loss = tf.nn.seq2seq.sequence_loss_by_example(
+    #loss = tf.nn.seq2seq.sequence_loss_by_example(
+    #    [logits],
+    #    [tf.reshape(self._targets, [-1])],
+    #    [tf.ones([batch_size * num_steps], dtype=data_type())])
+    loss2 = tf.nn.seq2seq.sequence_loss_by_example(
         [logits],
         [tf.reshape(self._targets, [-1])],
-        [tf.ones([batch_size * num_steps], dtype=data_type())])
-    self._cost = cost = tf.reduce_sum(loss) / batch_size
+        [tf.reshape(tf.cast(self._input_mask, data_type()), [-1])])
+    self._cost = cost = tf.reduce_sum(loss2) / batch_size
+    #cost = tf.reduce_sum(loss) / batch_size
     self._logits = logits
     self._final_state = state
 
@@ -165,6 +177,10 @@ class PTBModel(object):
   @property
   def targets(self):
     return self._targets
+
+  @property
+  def input_mask(self):
+    return self._input_mask
 
   @property
   def logits(self):
@@ -197,14 +213,14 @@ class SmallConfig(object):
   learning_rate = 1.0
   max_grad_norm = 5
   num_layers = 2
-  num_steps = 20
+  num_steps = 29
   hidden_size = 200
   max_epoch = 4
   max_max_epoch = 13
   keep_prob = 1.0
   lr_decay = 0.5
   batch_size = 20
-  vocab_size = 10000
+  vocab_size = 55000
 
 
 class MediumConfig(object):
@@ -220,7 +236,7 @@ class MediumConfig(object):
   keep_prob = 0.5
   lr_decay = 0.8
   batch_size = 20
-  vocab_size = 500000
+  vocab_size = 50000
 
 
 class LargeConfig(object):
@@ -236,7 +252,7 @@ class LargeConfig(object):
   keep_prob = 0.35
   lr_decay = 1 / 1.15
   batch_size = 20
-  vocab_size = 500000
+  vocab_size = 50000
 
 
 class TestConfig(object):
@@ -252,34 +268,36 @@ class TestConfig(object):
   keep_prob = 1.0
   lr_decay = 0.5
   batch_size = 20
-  vocab_size = 10000
+  vocab_size = 50000
 
 
 def run_epoch(session, model, data, eval_op, verbose=False):
   """Runs the model on the given data."""
-  epoch_size = ((len(data) // model.batch_size) - 1) // model.num_steps
+  epoch_size = ((len(data) // model.batch_size) - 1) // (model.num_steps+1)
   start_time = time.time()
   costs = 0.0
   iters = 0
   state = session.run(model.initial_state)
-  for step, (x, y) in enumerate(reader.ptb_iterator(data, model.batch_size,
+  for step, (x, y, mask) in enumerate(reader.ptb_iterator(data, model.batch_size,
                                                     model.num_steps)):
-    fetches = [model.cost, model.final_state, eval_op, model.logits, model.targets]
+    fetches = [model.cost, model.final_state, eval_op]
+    #fetches = [model.cost, model.final_state, eval_op, model.logits, model.targets]
     feed_dict = {}
     feed_dict[model.input_data] = x
     feed_dict[model.targets] = y
+    feed_dict[model.input_mask] = mask
     for i, (c, h) in enumerate(model.initial_state):
       feed_dict[c] = state[i].c
       feed_dict[h] = state[i].h
-    cost, state, _, logits, targets = session.run(fetches, feed_dict)
-    probs = tf.nn.softmax(logits)
-    probabilities = session.run(probs)
-    for batch in range(0, model.batch_size):
-      for timestep in range(0, model.num_steps):
-        print(str(step) + " " + str(batch) + " " + str(timestep) + " " + str(targets[batch, timestep]) + " " + str(probabilities[batch*20 + timestep, targets[batch, timestep]]))
+    cost, state, _ = session.run(fetches, feed_dict)
+    #cost, state, _, probabilities, targets = session.run(fetches, feed_dict)
+    #probabilities = np.exp(probabilities) / (((np.exp(probabilities)).sum(1))[:, None])
+    #for batch in range(0, model.batch_size):
+    #  for timestep in range(0, model.num_steps):
+    #    print(str(step) + " " + str(batch) + " " + str(timestep) + " " + str(targets[batch, timestep]) + " " + str(probabilities[batch*20 + timestep, targets[batch, timestep]]))
     costs += cost
-    iters += model.num_steps
-
+    #iters += model.num_steps
+    iters += mask.sum(1).sum(0) / model.batch_size
     if verbose and step % (epoch_size // 10) == 10:
       print("%.3f perplexity: %.3f speed: %.0f wps" %
             (step * 1.0 / epoch_size, np.exp(costs / iters),

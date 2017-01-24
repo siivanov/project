@@ -61,7 +61,7 @@ import time
 import numpy as np
 import tensorflow as tf
 
-from tensorflow.models.rnn.ptb import reader
+import rreader as reader
 
 flags = tf.flags
 logging = tf.logging
@@ -103,7 +103,7 @@ class PTBModel(object):
 
     self._initial_state = cell.zero_state(batch_size, data_type())
 
-    with tf.device("/cpu:0"):
+    with tf.device("/gpu:0"):
       embedding = tf.get_variable(
           "embedding", [vocab_size, size], dtype=data_type())
       inputs = tf.nn.embedding_lookup(embedding, self._input_data)
@@ -271,9 +271,8 @@ def run_epoch(session, model, data, eval_op, verbose=False):
     for i, (c, h) in enumerate(model.initial_state):
       feed_dict[c] = state[i].c
       feed_dict[h] = state[i].h
-    cost, state, _, logits, targets = session.run(fetches, feed_dict)
-    probs = tf.nn.softmax(logits)
-    probabilities = session.run(probs)
+    cost, state, _, probabilities, targets = session.run(fetches, feed_dict)
+    probabilities = np.exp(probabilities) / (((np.exp(probabilities)).sum(1))[:, None])
     for batch in range(0, model.batch_size):
       for timestep in range(0, model.num_steps):
         print(str(step) + " " + str(batch) + " " + str(timestep) + " " + str(targets[batch, timestep]) + " " + str(probabilities[batch*20 + timestep, targets[batch, timestep]]))
