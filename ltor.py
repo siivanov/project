@@ -123,7 +123,7 @@ class PTBModel(object):
     #inputs = tf.unstack(inputs, num=num_steps, axis=1)
     #inputs = [tf.squeeze(input_, [1])
     #          for input_ in tf.split(1, num_steps, inputs)]
-    #outputs, state = tf.nn.dynamic_rnn(cell, inputs, initial_state=self._initial_state, sequence_length=lengths)
+    outputs, state = tf.nn.dynamic_rnn(cell, inputs, initial_state=self._initial_state, sequence_length=lengths)
     #outputs = []
     #state = self._initial_state
     #with tf.variable_scope("RNN"):
@@ -132,8 +132,8 @@ class PTBModel(object):
     #    (cell_output, state) = cell(inputs[:, time_step, :], state)
     #    outputs.append(cell_output)
 
-    inputs = tf.unstack(inputs, num=num_steps, axis=1)
-    outputs, state = tf.nn.rnn(cell, inputs, initial_state=self._initial_state)
+    #inputs = tf.unstack(inputs, num=num_steps, axis=1)
+    #outputs, state = tf.nn.rnn(cell, inputs, initial_state=self._initial_state, sequence_length=lengths)
 
     output = tf.reshape(tf.concat(1, outputs), [-1, size])
     softmax_w = tf.get_variable(
@@ -144,12 +144,11 @@ class PTBModel(object):
     #    [logits],
     #    [tf.reshape(self._targets, [-1])],
     #    [tf.ones([batch_size * num_steps], dtype=data_type())])
-    loss2 = tf.nn.seq2seq.sequence_loss_by_example(
+    loss = tf.nn.seq2seq.sequence_loss_by_example(
         [logits],
         [tf.reshape(self._targets, [-1])],
         [tf.reshape(tf.cast(self._input_mask, data_type()), [-1])])
-    self._cost = cost = tf.reduce_sum(loss2) / batch_size
-    #cost = tf.reduce_sum(loss) / batch_size
+    self._cost = cost = tf.reduce_sum(loss) / batch_size
     self._logits = logits
     self._final_state = state
 
@@ -209,16 +208,16 @@ class PTBModel(object):
 
 class SmallConfig(object):
   """Small config."""
-  init_scale = 0.1
+  init_scale = 0.05
   learning_rate = 1.0
   max_grad_norm = 5
   num_layers = 2
   num_steps = 29
   hidden_size = 200
-  max_epoch = 4
+  max_epoch = 3
   max_max_epoch = 13
-  keep_prob = 1.0
-  lr_decay = 0.5
+  keep_prob = 0.5 #1.0
+  lr_decay = 0.8 #0.5
   batch_size = 20
   vocab_size = 55000
 
@@ -327,9 +326,6 @@ def main(_):
   train_data, valid_data, test_data, _ = raw_data
 
   config = get_config()
-  eval_config = get_config()
-  eval_config.batch_size = 1
-  eval_config.num_steps = 1
 
   with tf.Graph().as_default(), tf.Session() as session:
     initializer = tf.random_uniform_initializer(-config.init_scale,
@@ -338,7 +334,7 @@ def main(_):
       m = PTBModel(is_training=True, config=config)
     with tf.variable_scope("model", reuse=True, initializer=initializer):
       mvalid = PTBModel(is_training=False, config=config)
-      mtest = PTBModel(is_training=False, config=eval_config)
+      mtest = PTBModel(is_training=False, config=config)
 
     tf.initialize_all_variables().run()
 
